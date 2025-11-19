@@ -1,0 +1,421 @@
+-- Put this LocalScript in StarterPlayerScripts
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local player = Players.LocalPlayer
+
+-- ========== SETTINGS / STATE ==========
+local ESP_ENABLED = false
+local NOTIF_LIFETIME = 10
+
+-- default show state: COMMON/UNCOMMON/RARE off, others on
+local RARITY_ORDER = {
+    "[COMMON]",
+    "[UNCOMMON]",
+    "[RARE]",
+    "[EPIC]",
+    "[LEGENDARY]",
+    "[MYTHIC]",
+    "[UNIQUE]" -- UNIQUE is most rare, bottom
+}
+local rarityEnabled = {
+    ["[COMMON]"] = false,
+    ["[UNCOMMON]"] = false,
+    ["[RARE]"] = false,
+    ["[EPIC]"] = true,
+    ["[LEGENDARY]"] = true,
+    ["[MYTHIC]"] = true,
+    ["[UNIQUE]"] = true
+}
+
+local rarityColors = {
+    ["[COMMON]"] = Color3.fromRGB(255,255,255),
+    ["[UNCOMMON]"] = Color3.fromRGB(190,255,190),
+    ["[RARE]"] = Color3.fromRGB(255,201,107),
+    ["[EPIC]"] = Color3.fromRGB(123,29,255),
+    ["[LEGENDARY]"] = Color3.fromRGB(255,247,0),
+    ["[MYTHIC]"] = Color3.fromRGB(0,255,217),
+    ["[UNIQUE]"] = Color3.fromRGB(255,0,111)
+}
+
+-- storage
+local notified = {}
+local notifications = {}
+local currentHighlights = {}
+
+-- ========== GUI ROOT ==========
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "NotifSystemGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
+screenGui.IgnoreGuiInset = true
+
+-- ========== HELPERS ==========
+local function ColorToHex(color)
+    return string.format("%02X%02X%02X", math.clamp(color.R*255,0,255), math.clamp(color.G*255,0,255), math.clamp(color.B*255,0,255))
+end
+
+local function ColorRarityOnce(name, rarity, hex)
+    local s,e = string.find(name, rarity, 1, true)
+    if not s then return name end
+    return string.sub(name,1,s-1) .. "<font color='#"..hex.."'>"..rarity.."</font>" .. string.sub(name,e+1)
+end
+
+local function GetTeleportPart(tool)
+    if not tool then return nil end
+    if tool:FindFirstChild("Handle") and tool.Handle:IsA("BasePart") and tool.Handle.Transparency < 1 then
+        return tool.Handle
+    end
+    for _,v in ipairs(tool:GetDescendants()) do
+        if v:IsA("BasePart") and v.Transparency < 1 then return v end
+    end
+    return nil
+end
+
+-- create/remove highlight (ESP visible through walls)
+local function removeHighlight(tool)
+    if not tool then return end
+    local key = tostring(tool:GetDebugId())
+    if currentHighlights[key] then
+        pcall(function() currentHighlights[key]:Destroy() end)
+        currentHighlights[key] = nil
+    end
+end
+
+local function createHighlight(tool)
+    if not tool then return end
+    local key = tostring(tool:GetDebugId())
+    removeHighlight(tool)
+    local part = GetTeleportPart(tool) or tool
+    if not part then return end
+    if not ESP_ENABLED then return end
+    local h = Instance.new("Highlight")
+    h.Name = "NotifHighlight_"..(tool.Name:gsub("%s","_"))
+    h.Adornee = part
+    h.FillColor = rarityColors["[EPIC]"] -- will set per-rarity below
+    h.OutlineColor = Color3.new(0,0,0)
+    h.Parent = workspace -- parent to workspace (or a folder if you prefer)
+    -- set color by rarity if we can detect it
+    for tag,_ in pairs(rarityColors) do
+        if tool.Name:find(tag) then
+            h.FillColor = rarityColors[tag]
+            break
+        end
+    end
+    -- make outline visible through walls by keeping Fill partially transparent
+    h.FillTransparency = 0.6
+    h.OutlineTransparency = 0
+    currentHighlights[key] = h
+end
+
+local function updateToolHighlightState(tool)
+    -- highlight only if ESP enabled and rarity is enabled
+    if not tool or not tool:IsA("Tool") then return end
+    local found = nil
+    for _,tag in ipairs(RARITY_ORDER) do
+        if tool.Name:find(tag) then found = tag break end
+    end
+    local should = ESP_ENABLED and found and rarityEnabled[found]
+    if should then createHighlight(tool) else removeHighlight(tool) end
+end
+
+-- run refresh across current tools
+local function refreshESP()
+    for _, tool in ipairs(workspace:GetChildren()) do
+        if tool:IsA("Tool") then updateToolHighlightState(tool) end
+    end
+end
+
+-- ========== UI: Settings Gear (top-right) ==========
+local settingsButton = Instance.new("TextButton")
+settingsButton.Name = "SettingsGear"
+settingsButton.Size = UDim2.new(0,36,0,36)
+settingsButton.Position = UDim2.new(1, -46, 0, 8) -- top-right with padding
+settingsButton.AnchorPoint = Vector2.new(0,0)
+settingsButton.Text = "⚙️"
+settingsButton.Font = Enum.Font.SourceSans
+settingsButton.TextSize = 22
+settingsButton.BackgroundColor3 = Color3.fromRGB(40,40,40)
+settingsButton.TextColor3 = Color3.new(1,1,1)
+settingsButton.Parent = screenGui
+local sGearCorner = Instance.new("UICorner", settingsButton)
+sGearCorner.CornerRadius = UDim.new(0,6)
+
+-- Settings frame (top-right anchored)
+local settingsFrame = Instance.new("Frame")
+settingsFrame.Name = "SettingsFrame"
+settingsFrame.Size = UDim2.new(0, 320, 0, 320)
+settingsFrame.Position = UDim2.new(1, -340, 0, 8)
+settingsFrame.BackgroundColor3 = Color3.fromRGB(30,30,30)
+settingsFrame.Visible = false
+settingsFrame.Parent = screenGui
+Instance.new("UICorner", settingsFrame)
+
+-- Close (top-left inside settings)
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0,28,0,20)
+closeBtn.Position = UDim2.new(0,6,0,6)
+closeBtn.Text = "X"
+closeBtn.Font = Enum.Font.Gotham
+closeBtn.TextSize = 16
+closeBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
+closeBtn.Parent = settingsFrame
+Instance.new("UICorner", closeBtn)
+closeBtn.MouseButton1Click:Connect(function() settingsFrame.Visible = false end)
+
+-- Title
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,-12,0,28)
+title.Position = UDim2.new(0,6,0,6)
+title.BackgroundTransparency = 1
+title.Text = "Notification Settings"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 18
+title.TextColor3 = Color3.new(1,1,1)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = settingsFrame
+
+-- Lifetime label + textbox (centered)
+local lifetimeLabel = Instance.new("TextLabel")
+lifetimeLabel.Size = UDim2.new(1,-20,0,24)
+lifetimeLabel.Position = UDim2.new(0,10,0,44)
+lifetimeLabel.BackgroundTransparency = 1
+lifetimeLabel.Text = "Lifetime (seconds):"
+lifetimeLabel.Font = Enum.Font.Gotham
+lifetimeLabel.TextColor3 = Color3.new(1,1,1)
+lifetimeLabel.TextXAlignment = Enum.TextXAlignment.Left
+lifetimeLabel.Parent = settingsFrame
+
+local lifetimeBox = Instance.new("TextBox")
+lifetimeBox.Size = UDim2.new(0,80,0,24)
+lifetimeBox.Position = UDim2.new(1,-92,0,44)
+lifetimeBox.AnchorPoint = Vector2.new(0,0)
+lifetimeBox.Text = tostring(NOTIF_LIFETIME)
+lifetimeBox.Font = Enum.Font.Gotham
+lifetimeBox.TextSize = 16
+lifetimeBox.BackgroundColor3 = Color3.fromRGB(60,60,60)
+lifetimeBox.TextColor3 = Color3.new(1,1,1)
+lifetimeBox.Parent = settingsFrame
+Instance.new("UICorner", lifetimeBox)
+
+lifetimeBox.FocusLost:Connect(function(enter)
+    local n = tonumber(lifetimeBox.Text)
+    if n and n >= 1 then
+        NOTIF_LIFETIME = math.clamp(n,1,120)
+    else
+        lifetimeBox.Text = tostring(NOTIF_LIFETIME)
+    end
+end)
+
+-- Rarity checkboxes (2 across, 3 down, last centered bottom)
+local checkboxButtons = {}
+local startY = 84
+for i, tag in ipairs(RARITY_ORDER) do
+    local col = (i % 2 == 1) and 0 or 1
+    local row = math.floor((i-1)/2)
+    local bx = Instance.new("TextButton")
+    bx.Size = UDim2.new(0, 140, 0, 30)
+    if i < #RARITY_ORDER then
+        bx.Position = UDim2.new(0, 12 + (col * 156), 0, startY + row * 38)
+    else
+        -- last one centered bottom
+        bx.Position = UDim2.new(0.5, -70, 0, startY + 3 * 38)
+    end
+    bx.BackgroundColor3 = rarityEnabled[tag] and Color3.fromRGB(120,200,120) or Color3.fromRGB(70,70,70)
+    bx.TextColor3 = Color3.new(1,1,1)
+    bx.Font = Enum.Font.GothamBold
+    bx.Text = tag
+    bx.Parent = settingsFrame
+    Instance.new("UICorner", bx)
+
+    checkboxButtons[tag] = bx
+
+    bx.MouseButton1Click:Connect(function()
+        rarityEnabled[tag] = not rarityEnabled[tag]
+        bx.BackgroundColor3 = rarityEnabled[tag] and Color3.fromRGB(120,200,120) or Color3.fromRGB(70,70,70)
+        -- immediately update ESP and existing notifications (remove highlights of unselected)
+        refreshESP()
+    end)
+end
+
+-- ESP toggle (centered bottom area)
+local espBtn = Instance.new("TextButton")
+espBtn.Size = UDim2.new(1,-20,0,32)
+espBtn.Position = UDim2.new(0,10,1,-42)
+espBtn.Text = "ESP: OFF"
+espBtn.Font = Enum.Font.GothamBold
+espBtn.TextColor3 = Color3.new(1,1,1)
+espBtn.BackgroundColor3 = Color3.fromRGB(80,20,20)
+espBtn.Parent = settingsFrame
+Instance.new("UICorner", espBtn)
+
+espBtn.MouseButton1Click:Connect(function()
+    ESP_ENABLED = not ESP_ENABLED
+    espBtn.Text = ESP_ENABLED and "ESP: ON" or "ESP: OFF"
+    if ESP_ENABLED then
+        espBtn.BackgroundColor3 = Color3.fromRGB(20,80,20)
+    else
+        espBtn.BackgroundColor3 = Color3.fromRGB(80,20,20)
+        -- remove all highlights
+        for _,tool in ipairs(workspace:GetChildren()) do
+            if tool:IsA("Tool") then removeHighlight(tool) end
+        end
+    end
+    refreshESP()
+end)
+
+-- show/hide settings
+settingsButton.MouseButton1Click:Connect(function()
+    settingsFrame.Visible = not settingsFrame.Visible
+end)
+
+-- ========== NOTIFICATION SYSTEM ==========
+local function UpdateStack()
+    -- first notif at top center (Y = 50), then +90 each
+    for i, frame in ipairs(notifications) do
+        if frame.Parent then
+            local finalY = 50 + (i-1)*90
+            TweenService:Create(frame, TweenInfo.new(0.25), {Position = UDim2.new(0.5, -175, 0, finalY)}):Play()
+        end
+    end
+end
+
+local function createNotification(tool)
+    if not tool or notified[tool] then return end
+    -- detect rarity
+    local found = nil
+    for _, tag in ipairs(RARITY_ORDER) do
+        if tool.Name:find(tag, 1, true) then found = tag break end
+    end
+    if not found then return end
+    if not rarityEnabled[found] then return end
+
+    notified[tool] = true
+
+    -- highlight (ESP) if enabled & allowed
+    updateToolHighlightState(tool)
+
+    -- frame
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0,350,0,80)
+    frame.Position = UDim2.new(0.5, -175, 0, -80) -- start just above view
+    frame.BackgroundColor3 = Color3.fromRGB(30,30,30)
+    frame.BackgroundTransparency = 0.2
+    frame.BorderSizePixel = 0
+    frame.Parent = screenGui
+    Instance.new("UICorner", frame)
+
+    -- viewport
+    local viewport = Instance.new("ViewportFrame")
+    viewport.Size = UDim2.new(0,80,1,0)
+    viewport.Position = UDim2.new(0,0,0,0)
+    viewport.BackgroundTransparency = 1
+    viewport.Parent = frame
+
+    local part = GetTeleportPart(tool)
+    if part then
+        local clone = part:Clone()
+        clone.Parent = viewport
+        clone.Position = Vector3.new(0,0,0)
+        local cam = Instance.new("Camera")
+        cam.Parent = viewport
+        viewport.CurrentCamera = cam
+        cam.CFrame = CFrame.new(clone.Position + Vector3.new(3,3,3), clone.Position)
+    end
+
+    -- button text
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(1, -90, 1, 0)
+    button.Position = UDim2.new(0,90,0,0)
+    button.BackgroundTransparency = 1
+    button.RichText = true
+    button.Font = Enum.Font.GothamBold
+    button.TextScaled = true
+    button.TextColor3 = Color3.new(1,1,1)
+    button.Parent = frame
+
+    local esc = tool.Name:gsub("<","&lt;"):gsub(">","&gt;")
+    local hex = ColorToHex(rarityColors[found] or Color3.new(1,1,1))
+    button.Text = "A "..ColorRarityOnce(esc, found, hex).." has spawned!"
+
+    -- viewport hover enlarge
+    viewport.MouseEnter:Connect(function()
+        TweenService:Create(viewport, TweenInfo.new(0.15), {Size = UDim2.new(0,92,1,0)}):Play()
+    end)
+    viewport.MouseLeave:Connect(function()
+        TweenService:Create(viewport, TweenInfo.new(0.15), {Size = UDim2.new(0,80,1,0)}):Play()
+    end)
+
+    -- teleport upright on click
+    button.MouseButton1Click:Connect(function()
+        local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        local tp = GetTeleportPart(tool)
+        if hrp and tp then hrp.CFrame = CFrame.new(tp.Position + Vector3.new(0,10,0)) end
+    end)
+
+    -- add to stack and move into place
+    table.insert(notifications, frame)
+    UpdateStack()
+
+    -- auto remove after lifetime
+    task.delay(NOTIF_LIFETIME, function()
+        if frame and frame.Parent then
+            TweenService:Create(frame, TweenInfo.new(0.25), {Position = UDim2.new(0.5,-175,0,-120)}):Play()
+            task.wait(0.25)
+            if frame and frame.Parent then frame:Destroy() end
+            removeHighlight(tool)
+            for i,v in ipairs(notifications) do if v==frame then table.remove(notifications,i) break end end
+            UpdateStack()
+        end
+    end)
+
+    -- collected (only when removed from workspace)
+    tool.AncestryChanged:Connect(function(_, parent)
+        if parent ~= workspace and frame.Parent then
+            button.Text = "<font color='#FF0000'>COLLECTED</font>"
+            -- stop any further text updates (none here)
+            task.delay(2, function()
+                if frame and frame.Parent then
+                    TweenService:Create(frame, TweenInfo.new(0.25), {Position = UDim2.new(0.5,-175,0,-120)}):Play()
+                    task.wait(0.25)
+                    if frame and frame.Parent then frame:Destroy() end
+                    removeHighlight(tool)
+                    for i,v in ipairs(notifications) do if v==frame then table.remove(notifications,i) break end end
+                    UpdateStack()
+                end
+            end)
+        end
+    end)
+end
+
+-- ========== LISTENERS ==========
+workspace.ChildAdded:Connect(function(c)
+    if c:IsA("Tool") then
+        -- create notif only if allowed (createNotification checks rarityEnabled)
+        createNotification(c)
+        updateToolHighlightState(c)
+    end
+end)
+
+-- initial scan
+for _,c in ipairs(workspace:GetChildren()) do
+    if c:IsA("Tool") then
+        createNotification(c)
+        updateToolHighlightState(c)
+    end
+end
+
+-- live monitor: when rarities toggled or ESP toggled we already call refreshESP()
+-- but also ensure newly created highlights get handled
+workspace.DescendantAdded:Connect(function(d)
+    if d:IsA("Tool") then
+        createNotification(d)
+        updateToolHighlightState(d)
+    end
+end)
+
+-- when a tool removed, clear highlight and cleanup
+workspace.DescendantRemoving:Connect(function(d)
+    if d:IsA("Tool") then
+        removeHighlight(d)
+    end
+end)
