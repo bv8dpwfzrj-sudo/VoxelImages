@@ -136,7 +136,7 @@ end
 local settingsButton = Instance.new("TextButton")
 settingsButton.Name = "SettingsGear"
 settingsButton.Size = UDim2.new(0,36,0,36)
-settingsButton.Position = UDim2.new(1, -340, 0, 8)
+settingsButton.Position = UDim2.new(1, -46, 0, 8)
 settingsButton.AnchorPoint = Vector2.new(0,0)
 settingsButton.Text = "⚙️"
 settingsButton.Font = Enum.Font.SourceSans
